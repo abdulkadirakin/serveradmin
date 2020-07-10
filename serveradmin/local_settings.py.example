@@ -61,3 +61,92 @@ Copyright (c) 2019 InnoGames GmbH
 #     'https://graphite.example.com/grafana'
 #     '/dashboard/db/system-overview'
 # )
+
+# PowerDNS Configuration
+#
+# For details check: https://serveradmin.readthedocs.io/en/latest/
+POWERDNS = {
+    'domain': {
+        # Domain servertype in Serveradmin
+        #
+        # This servertype stores the information for domains in Serveradmin.
+        # It must be a single servertype, multiple ones are not supported.
+        'servertype': 'domain',
+
+        # Domain type attribute
+        #
+        # This attribute stores the domain type and is a attribute of the
+        # domain servertype. It must be a single string attribute and only
+        # allow NATIVE and MASTER. The default must be NATIVE. The attribute
+        # must be required.
+        'type': 'type',
+
+        # Domain relation attribute
+        #
+        # Hint: Must be added to servertype record.
+        #
+        # This attribute is used by the servertype for records to relate to the
+        # domain. It must be a single relation attribute and only be used once
+        # for the record servertype. This attribute must be required.
+        'related_by': 'domain',
+
+        # Domain SOA attribute
+        #
+        # This attribute holds the SOA information for a domain. It must be
+        # a single string attribute containing a valid SOA value in terms of
+        # DNS. It must not be empty. The attribute must be required.
+        'soa': 'soa',
+
+        # Domain NS attribute
+        #
+        # This attribute stores the NS information for a domain. It must be
+        # a multi string attribute containing valid NS values in terms of DNS.
+        # It must not be empty. The attribute must be required.
+        'ns': 'ns',
+    },
+    'record': {
+        # Record servertype in Serveradmin
+        #
+        # This servertype stores the information for records in Serveradmin.
+        # It must be a single servertype, multiple ones are not supported.
+        'servertype': 'record',
+
+        # Record TTL attribute
+        #
+        # This attribute stores the TTL (Time To Live) in seconds for a DNS
+        # record. It must be a integer single attribute containing a meaningful
+        # TTL in terms of DNS (>= 500 [5 minutes], =< 31536000 [1 year] are
+        # sane values). It must not be empty and have a meaningful default like
+        # e.g. 500. The attribute must be required.
+        'ttl': 'ttl',
+
+        # Record relation attribute
+        #
+        # This attribute is used by other servertypes to relate to records. For
+        # example a loadblancer or host. Once set it creates a DNS record
+        # based on the information of the object attribute specified down
+        # under and the record.
+        # It must be a multi relation attribute and can be added to one or
+        # more servertypes but not domain and record.
+        'related_by': 'records',
+
+        # DNS record type attribute mapping
+        #
+        # All DNS record types besides SOA and NS must be specified in this
+        # mapping. Key is the DNS record type like e.g. A, AAAA, TXT and value
+        # is the Serveradmin attribute of the object holding this information.
+        # The attribute must be present at the relating servertype e.g. host,
+        # loadbalancer or at the record servertype. The later one overrides
+        # the previous one and can be used to enforce defaults.
+        #
+        # All keys must be valid DNS record types supported by PowerDNS. All
+        # values must be existing Serveradmin single or multi attributes that
+        # return a valid DNS record value when casted to a string.
+        'attributes': {
+            'A': 'ipv4',
+            'AAAA': 'ipv6',
+            'MX': 'mx',
+            'TXT': 'txt',
+        }
+    }
+}

@@ -19,8 +19,8 @@ before_script:
     - psql --version
     - psql -U postgres -c 'SELECT version();'
     - psql -c 'create database serveradmin owner travis;' -U postgres
-    - echo "SECRET_KEY = 'TEST'" > serveradmin/local_settings.py
-    - echo "LOGGING = {}" >> serveradmin/local_settings.py
+    - psql -c 'create database powerdns owner travis;' -U postgres
+    - cp serveradmin/local_settings.py.travis.py serveradmin/local_settings.py
     - python -m serveradmin migrate
 script:
     # This will use Python's standard unit test discovery feature.

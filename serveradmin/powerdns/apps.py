@@ -6,3 +6,4 @@ class PowerdnsConfig(AppConfig):
 
     def ready(self):
         import serveradmin.powerdns.signals.domains # noqa
+        import serveradmin.powerdns.signals.records # noqa

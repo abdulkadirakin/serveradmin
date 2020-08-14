@@ -5,3 +5,4 @@ from serveradmin.powerdns.tests.domain.delete import PowerDNSDomainDeleteTests
 from serveradmin.powerdns.tests.record.create import PowerDNSRecordCreationTests
 from serveradmin.powerdns.tests.record.update import PowerDNSRecordUpdateTests
 from serveradmin.powerdns.tests.record.delete import PowerDNSRecordDeletionTests
+from serveradmin.powerdns.tests.record.ptr import PowerDNSRecordPTRTests

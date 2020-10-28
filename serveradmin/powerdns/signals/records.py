@@ -1,3 +1,4 @@
+from time import time
 from typing import List
 
 from django.conf import settings
@@ -6,6 +7,7 @@ from django.dispatch import receiver
 from netaddr import IPAddress
 
 from adminapi.dataset import MultiAttr
+from adminapi.filters import Any
 from serveradmin.dataset import Query, DatasetObject
 from serveradmin.powerdns.models import Record, Domain
 from serveradmin.serverdb.query_committer import post_commit
@@ -41,6 +43,9 @@ def apply_record_changes(sender, **kwargs):
     if kwargs['created']:
         for created in kwargs['created']:
             _create_records(created)
+    if kwargs['changed']:
+        for changed in kwargs['changed']:
+            _update_records(changed)
     if kwargs['deleted']:
         _delete_records(kwargs['deleted'])
 
@@ -192,3 +197,226 @@ def _delete_records(deleted: List[int]) -> None:
             _create_pdns_records(domain, s_object, s_object)
 
     records.delete()
+
+
+def _update_records(changed: dict) -> None:
+    # Avoid querying Serveradmin object multiple times for the same change
+    obj = None
+
+    if 'hostname' in changed:
+        _update_records_for_hostname(
+            changed['object_id'], changed['hostname']['new'])
+
+    if TTL in changed:
+        Record.objects.filter(record_id=changed['object_id']).update(
+            ttl=changed[TTL]['new'], change_date=int(time()))
+
+    for attr in changed.keys():
+        if attr in ATTRS:
+            record_type = [a for a, v in MAPPING.items() if v == attr][0]
+            if obj is None:
+                obj = Query(
+                    {'object_id': changed['object_id']}, RESTRICT_ALL).get()
+
+            if RELATED_BY in obj:
+                for record in obj['records']:
+                    _update_records_for_attribute(
+                        record, obj, changed, attr, record_type)
+            elif obj['servertype'] == SERVERTYPE:
+                _update_records_for_attribute(
+                    obj, obj, changed, attr, record_type)
+            else:
+                # Not a record servertype nor an object relating to a
+                # record - nothing to do.
+                break
+
+    # Remove all records for objects where the relation to a record has
+    # been removed and create records for those added.
+    if RELATED_BY in changed:
+        record_ids = [o['object_id'] for o in Query(
+            {'hostname': Any(*changed[RELATED_BY]['remove'])})]
+        Record.objects.filter(
+            record_id__in=record_ids,
+            object_id=changed['object_id']).delete()
+
+        if changed[RELATED_BY]['add']:
+            _create_records_for_object(
+                object_id=changed['object_id'],
+                records_filter=changed[RELATED_BY]['add'])
+
+
+def _update_records_for_hostname(object_id: int, new_hostname: str) -> None:
+    Record.objects.filter(
+        Q(record_id=object_id) & ~Q(type__in=('SOA', 'PTR'))
+    ).update(name=new_hostname, change_date=int(time()))
+
+    Record.objects.filter(record_id=object_id, type='PTR').update(
+        content=new_hostname, change_date=int(time()))
+
+
+def _update_records_for_attribute(
+        record: DatasetObject,
+        obj: DatasetObject,
+        change: dict,
+        attr: str,
+        record_type: str
+) -> None:
+    domain = Domain.objects.get(id=record[DOMAIN]['object_id'])
+
+    if change[attr]['action'] == 'update':
+        _update_records_for_single_attribute(
+            domain, record, obj, change, attr, record_type)
+    elif change[attr]['action'] == 'multi':
+        _update_records_for_multi_attribute(
+            domain, record, obj, change, attr, record_type)
+
+
+def _update_records_for_single_attribute(
+        domain: Domain,
+        record_obj: DatasetObject,
+        obj: DatasetObject,
+        change: dict,
+        attr: str,
+        record_type: str,
+) -> None:
+    if change[attr]['new'] is None:
+        # Restore records from the record object if needed
+        if obj['servertype'] != SERVERTYPE and attr in record_obj:
+            Record.objects.create(
+                object_id=record_obj['object_id'],
+                record_id=record_obj['object_id'],
+                type=record_type,
+                content=record_obj[attr],
+                name=record_obj['hostname'],
+                ttl=record_obj['ttl'])
+
+        # Remove all records previously created for the object or record
+        return Record.objects.filter(
+            object_id=obj['object_id'],
+            record_id=record_obj['object_id'],
+            type=record_type,
+            content=change[attr]['old']
+        ).delete()
+
+    record, created = Record.objects.get_or_create(
+        object_id=obj['object_id'],
+        record_id=record_obj['object_id'],
+        type=record_type)
+
+    # Fill other fields
+    if created:
+        record.name = record_obj['hostname']
+        record.ttl = record_obj[TTL]
+        record.domain = domain
+
+    record.change_date = int(time())
+    record.content = str(change[attr]['new'])
+    record.save()
+
+    if record_type in ('A', 'AAAA'):
+        value = str(change[attr]['new'])
+        Record.objects.filter(
+            object_id=obj['object_id'],
+            record_id=record_obj['object_id'],
+            type='SOA'
+        ).update(
+            name=IPAddress(value).reverse_dns[:-1], change_date=int(time()))
+        Record.objects.filter(
+            object_id=obj['object_id'],
+            record_id=record_obj['object_id'],
+            type='PTR'
+        ).update(
+            name=IPAddress(value).reverse_dns[:-1], change_date=int(time()))
+
+    # Remove records from the record servertype if this is an override.
+    if obj['servertype'] != SERVERTYPE:
+        Record.objects.filter(
+            object_id=record_obj['object_id'],
+            record_id=record_obj['object_id'],
+            type=record_type).delete()
+
+
+def _update_records_for_multi_attribute(
+        domain: Domain,
+        record_obj: DatasetObject,
+        obj: DatasetObject,
+        change: dict,
+        attr: str,
+        record_type: str,
+):
+    if 'add' in change[attr]:
+        for value in change[attr]['add']:
+            Record.objects.create(
+                object_id=obj['object_id'],
+                record_id=record_obj['object_id'],
+                type=record_type,
+                content=str(value),
+                name=record_obj['hostname'],
+                ttl=record_obj[TTL],
+                domain=domain)
+
+            # Create PTR records for A and AAAA DNS records
+            if record_type in ('A', 'AAAA'):
+                Record.objects.create(
+                    domain=domain,
+                    name=IPAddress(value).reverse_dns[:-1],
+                    type='SOA',
+                    ttl=record_obj[TTL],
+                    content=record_obj[DOMAIN]['soa'],
+                    record_id=record_obj['object_id'],
+                    object_id=obj['object_id'])
+                Record.objects.create(
+                    domain=domain,
+                    name=IPAddress(value).reverse_dns[:-1],
+                    type='PTR',
+                    ttl=record_obj[TTL],
+                    content=obj['hostname'],
+                    record_id=record_obj['object_id'],
+                    object_id=obj['object_id'])
+
+    if 'remove' in change[attr]:
+        Record.objects.filter(
+            object_id=obj['object_id'],
+            record_id=record_obj['object_id'],
+            type=record_type,
+            content__in=change[attr]['remove'],
+        ).delete()
+
+        # Remove PTR records
+        if record_type in ('A', 'AAAA'):
+            Record.objects.filter(
+                object_id=obj['object_id'],
+                record_id=record_obj['object_id'],
+                type__in=('SOA', 'PTR'),
+                name=IPAddress(change[attr]['remove']).reverse_dns[:-1]
+            ).delete()
+
+    # Restore records for records servertype if there is no override anymore
+    if obj['servertype'] != SERVERTYPE and not obj[attr] and record_obj[attr]:
+        for value in record_obj[attr]:
+            Record.objects.create(
+                object_id=record_obj['object_id'],
+                record_id=record_obj['object_id'],
+                type=record_type,
+                content=str(value),
+                name=record_obj['hostname'],
+                ttl=record_obj['ttl'])
+
+
+def _create_records_for_object(
+    hostname: str = None,
+    object_id: int = None,
+    records_filter: List[str] = None
+) -> None:
+    if object_id:
+        s_object = Query({'object_id': object_id}, RESTRICT_ALL).get()
+    else:
+        s_object = Query({'hostname': hostname}, RESTRICT_ALL).get()
+
+    records = s_object[RELATED_BY]
+    if records_filter:
+        records = [r for r in records if r['hostname'] in records_filter]
+
+    for record in records:
+        domain = Domain.objects.get(id=record[DOMAIN]['object_id'])
+        _create_pdns_records(domain, s_object, record)

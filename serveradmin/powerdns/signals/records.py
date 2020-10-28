@@ -1,4 +1,7 @@
+from typing import List
+
 from django.conf import settings
+from django.db.models import Q
 from django.dispatch import receiver
 from netaddr import IPAddress
 
@@ -38,6 +41,8 @@ def apply_record_changes(sender, **kwargs):
     if kwargs['created']:
         for created in kwargs['created']:
             _create_records(created)
+    if kwargs['deleted']:
+        _delete_records(kwargs['deleted'])
 
 
 def _create_records(created: dict) -> None:
@@ -159,3 +164,31 @@ def _create_pdns_records_in_db(
             content=record_name,
             record_id=record_id,
             object_id=object_id)
+
+
+def _delete_records(deleted: List[int]) -> None:
+    """Delete PowerDNS records for deleted objects
+
+    Delete PowerDNS records for Serveradmin objects of servertype record and
+    all others with an attribute relating to one or more records.
+
+    :param deleted: List of object_ids
+    :return:
+    """
+
+    records = Record.objects.filter(
+        Q(object_id__in=deleted) |
+        Q(record_id__in=deleted)).only('object_id', 'record_id')
+
+    for record in records:
+        # Restore records from overrides of object if not deleted too
+        if (
+                record.object_id != record.record_id and
+                record.record_id not in deleted
+        ):
+            s_object = Query(
+                {'object_id': record.record_id}, RESTRICT_RECORD).get()
+            domain = Domain.objects.get(id=s_object[DOMAIN]['object_id'])
+            _create_pdns_records(domain, s_object, s_object)
+
+    records.delete()
